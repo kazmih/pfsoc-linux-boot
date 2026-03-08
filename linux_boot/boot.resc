@@ -1,0 +1,17 @@
+mach create "icicle-kit"
+machine LoadPlatformDescription @F:\FPGA\Task5\linux_boot\icicle.repl
+
+showAnalyzer sysbus.uart0
+showAnalyzer sysbus.uart1
+
+sysbus.cpu2 IsHalted true
+sysbus.cpu3 IsHalted true
+sysbus.cpu4 IsHalted true
+
+sysbus LoadBinary @F:\Downloads\fw_payload.bin 0x80000000
+sysbus LoadFdt @F:\Downloads\riscvpc_renode.dtb 0x82200000 "" true
+sysbus LoadBinary @F:\Downloads\initramfs_renode.cpio.gz 0x88000000
+
+sysbus.cpu1 PC 0x80000000
+
+start

@@ -1,0 +1,6 @@
+linux_boot/fw_payload.bin
+linux_boot/initramfs_renode.cpio.gz
+build_artifacts/vmlinux.bin
+build_artifacts/fitImage.fit
+build_artifacts/payload.bin
+build_artifacts/initramfs.cpio.gz

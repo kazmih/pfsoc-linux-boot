@@ -1,0 +1,40 @@
+cpu1: CPU.RiscV64 @ sysbus
+    cpuType: "rv64gc"
+    hartId: 1
+    timeProvider: clint
+
+cpu2: CPU.RiscV64 @ sysbus
+    cpuType: "rv64gc"
+    hartId: 2
+    timeProvider: clint
+
+cpu3: CPU.RiscV64 @ sysbus
+    cpuType: "rv64gc"
+    hartId: 3
+    timeProvider: clint
+
+cpu4: CPU.RiscV64 @ sysbus
+    cpuType: "rv64gc"
+    hartId: 4
+    timeProvider: clint
+
+clint: IRQControllers.CoreLevelInterruptor @ sysbus 0x02000000
+    frequency: 1000000
+    [0, 1] -> cpu1@[3, 7]
+
+plic: IRQControllers.PlatformLevelInterruptController @ sysbus 0x0C000000
+    0 -> cpu1@11
+    numberOfSources: 186
+    numberOfContexts: 2
+    prioritiesEnabled: false
+
+uart0: UART.NS16550 @ sysbus 0x20000000
+    wideRegisters: true
+    -> plic@90
+
+uart1: UART.NS16550 @ sysbus 0x20100000
+    wideRegisters: true
+    -> plic@91
+
+ddr: Memory.MappedMemory @ sysbus 0x80000000
+    size: 0x40000000
