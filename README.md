@@ -1,54 +1,93 @@
-# PolarFire SoC Linux Boot on Renode
+# PolarFire SoC Linux Boot on Renode (Antmicro Pre-built Binaries)
 
-## Overview
+## Branch: renode-antmicro-boot
 
-This repository documents the process of building a Linux boot image for the Microchip PolarFire SoC Icicle Kit and booting it on the Renode hardware emulator. The project uses the Buildroot SDK provided by Microchip to compile OpenSBI, Linux kernel 5.15.68, and a BusyBox-based initramfs, then boots the resulting firmware on a Renode-emulated PolarFire SoC platform.
+This branch documents a fully working Linux boot to an interactive shell on the Renode-emulated PolarFire SoC Icicle Kit, using Antmicro's pre-built binary set matched to the Renode platform model. The boot is complete: HSS initializes all cores, U-Boot loads the kernel from the FIT image, Linux boots, and a root shell is accessible on mmuart1.
 
----
-
-## Hardware Target
-
-- Board: Microchip PolarFire SoC Icicle Kit
-- SoC: MPFS095T-FCSG325
-- CPU: 5x RISC-V cores (1x E51 monitor core + 4x U54 application cores), RV64GC ISA
-- Relevant memory map:
-  - DDR: 0x80000000 (1 GB)
-  - CLINT: 0x02000000
-  - PLIC: 0x0C000000
-  - UART0: 0x20000000
-  - UART1: 0x20100000
-
----
-
-## Boot Sequence Theory
-
-On real PolarFire SoC hardware, the boot sequence is:
-
-1. Power on: The E51 monitor core executes the Hart Software Services (HSS) bootloader from eNVM at 0x20220000. HSS initializes DDR, clocks, and peripheral configuration, then loads subsequent boot stages and releases the U54 application cores.
-2. OpenSBI (M-mode, 0x80000000): Provides the Supervisor Binary Interface (SBI) used by the OS to perform privileged operations such as timer management, IPI, and system reset.
-3. U-Boot (S-mode, 0x80200000): Locates and loads the Linux kernel and device tree blob from storage, then transfers control to the kernel.
-4. Linux kernel (S-mode, 0x80400000): Reads the device tree blob (DTB) to discover hardware, loads drivers, mounts the root filesystem, and starts the init process.
-
-For Renode emulation, the HSS and U-Boot stages are bypassed. OpenSBI is built with the Linux kernel embedded as its payload (fw_payload.bin), and the modified DTB is embedded into OpenSBI at build time. This reduces the boot chain to: OpenSBI -> Linux kernel directly.
+This approach differs from the `main` branch which attempts a direct fw_payload boot (OpenSBI + kernel, no HSS or U-Boot). That approach boots the kernel but does not reach an interactive shell due to UART interrupt limitations in the single-core Renode setup. This branch uses the full hardware boot flow and reaches a working login prompt.
 
 ---
 
 ## What Was Achieved
 
-- Full Buildroot SDK compilation on Ubuntu 22.04 in VMware, producing all necessary boot artifacts.
-- OpenSBI v0.9 boots successfully on the emulated PolarFire SoC platform in Renode.
-- Linux kernel 5.15.68 (linux4microchip+fpga-2022.09) fully boots and initializes on the emulated platform.
-- Initramfs is successfully unpacked by the kernel (~19 MB BusyBox-based root filesystem).
-- All major kernel subsystems initialize: memory management, SMP (single core), RCU, networking stack, SCSI, USB, PCI, and serial drivers.
-- UART1 (0x20100000) is probed and registered as ttyS1 by the 8250/16550 driver.
-- The earlycon (ns16550a at 0x20100000) provides console output throughout the entire boot sequence via the keep_bootcon mechanism.
-- The BusyBox init process runs from the initramfs.
+- HSS (Hart Software Services) v0.99 boots on mmuart0, initializes DDR and all five cores, and loads U-Boot.
+- U-Boot 2020.01 boots on mmuart1, reads the FIT image from RAM at 0x88300000, verifies sha1 hashes, and loads the kernel, initramfs, and DTB.
+- Linux kernel boots fully on mmuart1 with all subsystems initializing.
+- BusyBox Buildroot userspace starts: syslogd, klogd, sysctl, mdev, networking (eth0).
+- Interactive login prompt appears: `buildroot login:`
+- Root shell accessible with credentials `root / root`.
 
-## What Remains Incomplete
+---
 
-Interactive shell access is not functional in this Renode setup. The BusyBox shell runs after init but cannot be used interactively. The 8250/16550 driver in Linux uses interrupt-driven TX and RX. Renode's NS16550 peripheral model requires working PLIC interrupt delivery for the UART to function interactively. The interrupt path from the UART through the PLIC to the running hart does not fully support the character-by-character I/O needed by a terminal session. As a result, the shell starts but produces no output and accepts no input.
+## Boot Flow
 
-This limitation is specific to Renode emulation. On real PolarFire SoC hardware, a full interactive login prompt would appear on UART1 at 115200 baud after the boot sequence completes.
+```
+Renode loads hss.elf to eNVM (0x20220000)
+    |
+    v
+HSS (E51, M-mode)
+  - Initializes DDR, clocks, PMP
+  - Loads U-Boot from eMMC to DDR (0x80200000)
+  - Releases U54 application cores
+    |
+    v
+U-Boot (U54_1, S-mode, 0x80200000)
+  - Reads fitImage.fit from RAM at 0x88300000
+  - Verifies kernel, initramfs, DTB hashes (sha1)
+  - Loads kernel to 0x80200000, initramfs to 0x84000000, DTB to 0x82200000
+  - Jumps to kernel entry
+    |
+    v
+Linux kernel (U54_1, S-mode)
+  - Reads DTB, discovers hardware
+  - Mounts initramfs (BusyBox Buildroot rootfs)
+  - Starts /init -> login prompt on mmuart1
+```
+
+---
+
+## Hardware Platform
+
+- Board: Microchip PolarFire SoC Icicle Kit
+- SoC: MPFS095T-FCSG325
+- CPU: 5x RISC-V cores (1x E51 monitor + 4x U54 application cores), RV64GC
+- Emulated by: Renode 1.13.1 (bundled with SoftConsole)
+- Platform description: `F:\SoftConsole\renode\scripts\single-node\polarfire-soc.repl` (Antmicro, bundled)
+
+---
+
+## Required Binary Files
+
+These files are not committed to the repository due to size. Download them before running.
+
+All files are pre-built by Antmicro and are matched to each other and to the Renode platform model bundled in SoftConsole.
+
+**hss.elf** (~3.2 MB) — Hart Software Services bootloader ELF:
+```
+https://dl.antmicro.com/projects/renode/icicle--hss.elf-s_3297936-bcb7ef60abc78a878995554160eaac1dea962e95
+```
+
+**emmc.img** (~25.5 MB) — eMMC flash image containing U-Boot:
+```
+https://dl.antmicro.com/projects/renode/icicle--emmc.img-s_26746880-3a6ef871bc8eb6fcfbda344e8c23fb534ef89961
+```
+
+**u-boot** (~5 MB) — U-Boot ELF for symbol loading only:
+```
+https://dl.antmicro.com/projects/renode/icicle--u-boot-s_5132448-194bf14572a9bc4b26727567065ede2ffd7f1201
+```
+
+**vmlinux** (~8.2 MB) — Linux kernel ELF for symbol loading only:
+```
+https://dl.antmicro.com/projects/renode/icicle--vmlinux-s_8563992-fa2aad1e61ec38b411f6afb543503cb26601b1e2
+```
+
+**fitImage.fit** (~16 MB) — FIT image containing kernel, initramfs, and DTB:
+```
+https://dl.antmicro.com/projects/renode/icicle--fitImage.fit-s_16976563-1d0e86ed4cc7c24e167ca899fd929d954956b478
+```
+
+Place all five files in `F:\Downloads\` before running.
 
 ---
 
@@ -56,413 +95,91 @@ This limitation is specific to Renode emulation. On real PolarFire SoC hardware,
 
 ```
 linux_boot/
-    icicle.repl               Renode platform description for PolarFire SoC Icicle Kit
-    boot.resc                 Renode boot script
-    riscvpc.dts               Modified device tree source for Renode
-    riscvpc_renode.dtb        Compiled device tree blob for Renode
-    fw_payload.bin            OpenSBI + Linux kernel payload (load at 0x80000000)
-    initramfs_renode.cpio.gz  Modified BusyBox initramfs (load at 0x88000000)
+    boot.resc       Renode boot script (this branch)
+    BINARIES.md     Binary download links (this file summarized)
 ```
 
-Original Buildroot SDK output artifacts (unmodified, for reference or real hardware use):
+The platform description and .repl file used in this branch are from the SoftConsole installation at:
 ```
-fitImage.fit          FIT image containing kernel, DTB, and initramfs for real hardware boot
-payload.bin           HSS payload binary for real hardware
-vmlinux.bin           Linux kernel binary (PE32+ RISC-V format, 17 MB)
-initramfs.cpio.gz     Original BusyBox root filesystem (20 MB)
-riscvpc.dtb           Original device tree blob targeting real hardware
+F:\SoftConsole\renode\scripts\single-node\polarfire-soc.resc
+F:\SoftConsole\renode\platforms\cpus\polarfire-soc.repl
 ```
 
 ---
 
-## Build Environment
+## Boot Script
 
-- Host OS: Ubuntu 22.04 LTS running in VMware Workstation on Windows 11
-- SDK: polarfire-soc/polarfire-soc-buildroot-sdk (Microchip, archived November 2022)
-- Toolchain: riscv64-unknown-linux-gnu- (built internally by Buildroot)
-- Renode: bundled with SoftConsole (Microchip IDE)
+`linux_boot/boot.resc`:
+
+```
+i @F:\SoftConsole\renode\scripts\single-node\polarfire-soc.resc
+
+emulation SetGlobalSerialExecution true
+emulation SetGlobalQuantum "0.000001"
+
+showAnalyzer mmuart1
+
+machine SdhcCardFromFile @F:\Downloads\emmc.img mmc
+
+macro reset
+"""
+    sysbus LoadELF @F:\Downloads\hss.elf
+    sysbus LoadBinary @F:\Downloads\fitImage.fit 0x88300000
+    sysbus LoadSymbolsFrom @F:\Downloads\vmlinux_renode
+    sysbus LoadSymbolsFrom @F:\Downloads\u-boot
+"""
+
+runMacro $reset
+```
 
 ---
 
-## Step-by-Step Build Process
-
-### Step 1: Clone the Buildroot SDK
-
-```bash
-git clone https://github.com/polarfire-soc/polarfire-soc-buildroot-sdk.git
-cd polarfire-soc-buildroot-sdk
-git submodule update --init --recursive --depth=1
-```
-
-The Linux kernel and riscv-gnu-toolchain submodules are large. Use --depth=1 for a shallow clone to reduce download size. Allow significant time for cloning.
-
-### Step 2: Install Build Dependencies
-
-```bash
-sudo apt install -y gawk texinfo u-boot-tools mtools
-```
-
-These packages are not present by default on Ubuntu 22.04 but are required by the Buildroot build system.
-
-### Step 3: Expand VM Disk Space
-
-The full build requires approximately 35-40 GB of disk space. Expand the VMware virtual disk to at least 50 GB before building, then extend the partition from within Ubuntu:
-
-```bash
-sudo growpart /dev/sda 3
-sudo resize2fs /dev/sda3
-```
-
-### Step 4: Build the Buildroot SDK
-
-```bash
-make DEVKIT=icicle-kit-es
-```
-
-This builds the full software stack including the RISC-V cross-compiler toolchain, Linux kernel, OpenSBI, U-Boot, BusyBox, and all userspace packages. Build time is approximately 1-3 hours.
-
-Key output files produced under `work/`:
-- `fitImage.fit` (37 MB): FIT image for real hardware
-- `payload.bin` (546 KB): HSS payload for real hardware
-- `vmlinux.bin` (17 MB): Linux kernel binary
-- `initramfs.cpio.gz` (20 MB): BusyBox root filesystem
-- `riscvpc.dtb` (17 KB): Device tree blob
-
-### Step 5: Modify the Device Tree for Renode
-
-The original DTB targets physical PolarFire SoC hardware and contains values incompatible with Renode. The following modifications are required.
-
-Decompile the DTB to DTS source:
-
-```bash
-cd work
-dtc -I dtb -O dts riscvpc.dtb -o riscvpc.dts
-```
-
-Apply the following modifications. Each is applied using Python for reliable multi-line text replacement:
-
-**a. Fix the DDR memory node address.**
-
-The original DTB places DDR at physical address 0x1000000000 (64 GB offset). Renode maps DDR starting at 0x80000000:
-
-```bash
-sed -i 's/reg = <0x10 0x00 0x00 0x76000000>/reg = <0x00 0x80000000 0x00 0x40000000>/' riscvpc.dts
-```
-
-**b. Disable cpu@2, cpu@3, and cpu@4.**
-
-Only hartid=1 (cpu@1) runs in Renode. Disabling the other U54 cores prevents the kernel SMP bringup from hanging while waiting for secondary CPUs:
-
-```python
-import re
-with open('riscvpc.dts', 'r') as f:
-    content = f.read()
-for cpu in ['cpu@2', 'cpu@3', 'cpu@4']:
-    pattern = r'(' + cpu + r'.*?status = )"okay"'
-    content = re.sub(pattern, r'\1"disabled"', content, count=1, flags=re.DOTALL)
-with open('riscvpc.dts', 'w') as f:
-    f.write(content)
-```
-
-**c. Fix the UART1 serial node.**
-
-The original serial@20100000 node references a clock provider (clkcfg) that does not exist in Renode. This causes the 8250 driver to return EINVAL and fail to probe. Remove the clock reference, remove the wide-register properties that are incompatible with Renode's NS16550 model, and add a fixed clock-frequency:
-
-```python
-import re
-with open('riscvpc.dts', 'r') as f:
-    content = f.read()
-old = re.search(r'(serial@20100000 \{.*?\});', content, re.DOTALL).group(0)
-new = old
-new = re.sub(r'compatible = "[^"]+";', 'compatible = "ns16550";', new)
-new = re.sub(r'\t+reg-io-width = <[^>]+>;\n', '', new)
-new = re.sub(r'\t+reg-shift = <[^>]+>;\n', '', new)
-new = re.sub(r'\t+clocks = <[^>]+>;\n', '', new)
-content = content.replace(old, new)
-with open('riscvpc.dts', 'w') as f:
-    f.write(content)
-```
-
-Then insert `clock-frequency = <150000000>;` into the serial@20100000 node (before the phandle line).
-
-**d. Update the chosen node.**
-
-Calculate the initramfs end address:
-
-```bash
-INITRD_SIZE=$(stat -c%s initramfs_renode.cpio.gz)
-INITRD_END=$(python3 -c "print(hex(0x88000000 + $INITRD_SIZE))")
-echo $INITRD_END
-```
-
-Then update the chosen node with correct bootargs and initrd location:
-
-```python
-import re
-with open('riscvpc.dts', 'r') as f:
-    content = f.read()
-content = re.sub(
-    r'(chosen \{[^}]*bootargs = "[^"]*";)',
-    r'\1\n\t\tlinux,initrd-start = <0x88000000>;\n\t\tlinux,initrd-end = <INITRD_END_VALUE>;',
-    content
-)
-# Update bootargs to correct console and enable keep_bootcon
-content = re.sub(
-    r'bootargs = "[^"]*"',
-    'bootargs = "earlycon=ns16550a,mmio32,0x20100000,115200n8 console=ttyS1,115200 keep_bootcon init=/bin/sh"',
-    content
-)
-with open('riscvpc.dts', 'w') as f:
-    f.write(content)
-```
-
-Replace `INITRD_END_VALUE` with the hex value from the calculation above.
-
-Recompile the DTB:
-
-```bash
-dtc -I dts -O dtb riscvpc.dts -o riscvpc_renode.dtb 2>/dev/null
-```
-
-Verify the changes compiled correctly:
-
-```bash
-strings riscvpc_renode.dtb | grep "keep_bootcon\|initrd\|bootargs"
-```
-
-### Step 6: Modify the Initramfs
-
-Extract the original initramfs:
-
-```bash
-mkdir -p /tmp/initramfs_extract
-cd /tmp/initramfs_extract
-zcat ~/polarfire-soc-buildroot-sdk/work/initramfs.cpio.gz | cpio -idmv 2>/dev/null
-```
-
-Edit `etc/inittab` to run a shell on ttyS1. Replace the default getty line with:
-
-```
-ttyS1::respawn:-/bin/sh
-```
-
-Repack the initramfs:
-
-```bash
-cd /tmp/initramfs_extract
-find . | cpio -o -H newc 2>/dev/null | gzip -9 > ~/polarfire-soc-buildroot-sdk/work/initramfs_renode.cpio.gz
-```
-
-### Step 7: Build OpenSBI with Linux Kernel as Payload
-
-Build OpenSBI for the generic RISC-V platform. The Linux kernel binary is embedded as the payload at offset 0x200000, and the Renode-modified DTB is embedded so OpenSBI passes the correct DTB address to the kernel via register a1:
-
-```bash
-cd ~/polarfire-soc-buildroot-sdk/opensbi
-make PLATFORM=generic \
-  CROSS_COMPILE=~/polarfire-soc-buildroot-sdk/toolchain/bin/riscv64-unknown-linux-gnu- \
-  FW_PAYLOAD_PATH=~/polarfire-soc-buildroot-sdk/work/vmlinux.bin \
-  FW_PAYLOAD_OFFSET=0x200000 \
-  FW_FDT_PATH=~/polarfire-soc-buildroot-sdk/work/riscvpc_renode.dtb \
-  clean all
-```
-
-Output: `build/platform/generic/firmware/fw_payload.bin` (approximately 19 MB)
-
-This single binary contains OpenSBI firmware, the Linux kernel at offset 0x200000, and the embedded DTB. Loading it at 0x80000000 in Renode is sufficient for OpenSBI to boot Linux directly without U-Boot.
-
-### Step 8: Transfer Files to Windows
-
-Serve build outputs from Ubuntu over HTTP:
-
-```bash
-cd ~/polarfire-soc-buildroot-sdk/opensbi/build/platform/generic/firmware
-cp ~/polarfire-soc-buildroot-sdk/work/initramfs_renode.cpio.gz .
-cp ~/polarfire-soc-buildroot-sdk/work/riscvpc_renode.dtb .
-python3 -m http.server 8000
-```
-
-Access `http://<VM_IP>:8000` from the Windows browser and download:
-- `fw_payload.bin` to `F:\Downloads\fw_payload.bin`
-- `initramfs_renode.cpio.gz` to `F:\Downloads\initramfs_renode.cpio.gz`
-- `riscvpc_renode.dtb` to `F:\Downloads\riscvpc_renode.dtb`
-
-### Step 9: Create the Renode Platform Description
-
-Save as `F:\FPGA\Task5\linux_boot\icicle.repl`:
-
-```
-cpu1: CPU.RiscV64 @ sysbus
-    cpuType: "rv64gc"
-    hartId: 1
-    timeProvider: clint
-
-cpu2: CPU.RiscV64 @ sysbus
-    cpuType: "rv64gc"
-    hartId: 2
-    timeProvider: clint
-
-cpu3: CPU.RiscV64 @ sysbus
-    cpuType: "rv64gc"
-    hartId: 3
-    timeProvider: clint
-
-cpu4: CPU.RiscV64 @ sysbus
-    cpuType: "rv64gc"
-    hartId: 4
-    timeProvider: clint
-
-clint: IRQControllers.CoreLevelInterruptor @ sysbus 0x02000000
-    frequency: 1000000
-    [0, 1] -> cpu1@[3, 7]
-
-plic: IRQControllers.PlatformLevelInterruptController @ sysbus 0x0C000000
-    0 -> cpu1@11
-    numberOfSources: 186
-    numberOfContexts: 2
-    prioritiesEnabled: false
-
-uart0: UART.NS16550 @ sysbus 0x20000000
-    wideRegisters: true
-    -> plic@90
-
-uart1: UART.NS16550 @ sysbus 0x20100000
-    wideRegisters: true
-    -> plic@91
-
-ddr: Memory.MappedMemory @ sysbus 0x80000000
-    size: 0x40000000
-```
-
-Platform design notes:
-- The E51 core (hartid=0) is not instantiated. The PolarFire SoC E51 runs HSS which is not needed for this emulation. Only the U54 application cores (hartid=1 through hartid=4) are present.
-- Only cpu1 executes. cpu2, cpu3, cpu4 are present so OpenSBI can reference their hart IDs without crashing, but they are halted in the boot script.
-- CLINT frequency is set to 1 MHz, matching the hardware specification. The CLINT timer interrupt and software interrupt lines are connected to cpu1.
-- The PLIC has 186 interrupt sources and 2 contexts (M-mode and S-mode for hartid=1), matching the kernel's expectation for a single-hart system.
-- DDR is mapped at 0x80000000 with 1 GB size, matching the corrected memory node in the DTB.
-
-### Step 10: Create the Renode Boot Script
-
-Save as `F:\FPGA\Task5\linux_boot\boot.resc`:
-
-```
-mach create "icicle-kit"
-machine LoadPlatformDescription @F:\FPGA\Task5\linux_boot\icicle.repl
-
-showAnalyzer sysbus.uart0
-showAnalyzer sysbus.uart1
-
-sysbus.cpu2 IsHalted true
-sysbus.cpu3 IsHalted true
-sysbus.cpu4 IsHalted true
-
-sysbus LoadBinary @F:\Downloads\fw_payload.bin 0x80000000
-sysbus LoadFdt @F:\Downloads\riscvpc_renode.dtb 0x82200000 "" true
-sysbus LoadBinary @F:\Downloads\initramfs_renode.cpio.gz 0x88000000
-
-sysbus.cpu1 PC 0x80000000
-
-start
-```
-
-Boot script notes:
-- `fw_payload.bin` is loaded at 0x80000000, which is OpenSBI's base address.
-- The DTB is loaded at 0x82200000 using Renode's LoadFdt command. This address matches the `Domain0 Next Arg1` value that OpenSBI reports, which is the address OpenSBI passes to the kernel in register a1.
-- The initramfs is loaded at 0x88000000, matching the `linux,initrd-start` value in the chosen node of the DTB.
-- cpu1's PC is set to 0x80000000 (OpenSBI entry point). cpu1 has hartid=1 and becomes the boot hart.
-- cpu2, cpu3, cpu4 are halted so they do not compete to become the boot hart or interfere with OpenSBI cold boot initialization.
-
-### Step 11: Run Renode
+## How to Run
 
 ```
 "F:\SoftConsole\renode\bin\Renode.exe" --plain -e "include @F:\FPGA\Task5\linux_boot\boot.resc"
 ```
 
-Two UART terminal windows open automatically. OpenSBI output appears on uart0. The Linux kernel boot log appears on uart1.
+In the Renode monitor type:
+```
+start
+```
+
+Watch mmuart0 for HSS output. Watch mmuart1 for U-Boot and Linux output. Boot to login prompt takes approximately 10-15 minutes due to `SetGlobalSerialExecution true` serializing all hart execution for determinism.
+
+Login with `root` / `root`.
 
 ---
 
-## Expected Boot Output
+## Key Design Decisions
 
-**uart0 (OpenSBI):**
+**Why SetGlobalSerialExecution true is required.**
 
-```
-OpenSBI v0.9
-Platform Name             : Microchip PolarFire-SoC Icicle Kit
-Platform Features         : timer,mfdeleg
-Platform HART Count       : 5
-Firmware Base             : 0x80000000
-Firmware Size             : 148 KB
-Runtime SBI Version       : 0.2
-Domain0 Boot HART         : 1
-Domain0 Next Address      : 0x0000000080200000
-Domain0 Next Arg1         : 0x0000000082200000
-Domain0 Next Mode         : S-mode
-Boot HART ID              : 1
-```
+The PolarFire SoC has 5 RISC-V harts executing concurrently. In Renode's default parallel execution mode, the timing between harts is non-deterministic. At the point where the Linux kernel initializes SMP and the secondary U54 cores begin executing, a race condition causes one or more cores to jump to a garbage address and abort with `CPU abort: Trying to execute code outside RAM or ROM`. Serial execution forces all harts to take turns in a round-robin, eliminating the race.
 
-**uart1 (Linux kernel, abbreviated):**
+**Why SetGlobalQuantum "0.000001" is required.**
 
-```
-Linux version 5.15.68-linux4microchip+fpga-2022.09
-Machine model: Microchip PolarFire-SoC Icicle Kit
-earlycon: ns16550a0 at MMIO32 0x0000000020100000
-printk: bootconsole [ns16550a0] enabled
-printk: debug: skip boot console de-registration.
-Memory: ~980MB available
-smp: Brought up 1 node, 1 CPU
-devtmpfs: initialized
-Unpacking initramfs...
-Serial: 8250/16550 driver, 4 ports, IRQ sharing disabled
-20100000.serial: ttyS1 at MMIO 0x20100000 (irq = 6, base_baud = 9375000) is a 16550
-printk: console [ttyS1] enabled
-mpfs_dma_proxy mpfs-dma-proxy: proxy dma 4 channels initialized
-```
+The default quantum of `0.0008` (800 microseconds of emulated time per turn) is still too coarse. With a large quantum, a hart can run far ahead of others before yielding, which causes the same SMP race condition even in serial mode. Reducing the quantum to 1 microsecond forces very fine-grained interleaving and produces a deterministic, successful boot. This is the value recommended by Antmicro for this platform.
 
-After the final driver initialization line, the kernel enters the idle loop and the BusyBox init process runs. The CPU program counter can be verified via the Renode monitor:
+**Why Antmicro's pre-built binaries are used instead of the Buildroot SDK output.**
 
-```
-sysbus.cpu1 PC
-```
+The Buildroot SDK produces binaries targeting physical PolarFire SoC hardware with physical DDR at 0x1000000000, sha256 hashes in the FIT image (unsupported by U-Boot 2020.01), and load addresses in the 0x1000000000 range. Antmicro's binaries are pre-adapted for the Renode platform: DDR at 0x80000000, sha1 hashes, and load addresses within the emulated memory map. Using the Buildroot SDK output requires patching the FIT image .its load addresses, replacing sha256 with sha1, replacing the embedded DTB with a Renode-modified version, and rebuilding. These steps are documented on the main branch.
 
-A value in the range 0xffffffff80000000 confirms the kernel is running normally in the idle loop.
+**Why the eMMC image is needed.**
 
----
+HSS loads U-Boot from the eMMC flash. In Renode, the eMMC is emulated as a file mapped to the sdhc peripheral. The fitImage is loaded directly into RAM at 0x88300000 by the Renode script, bypassing the eMMC for the kernel image. HSS and U-Boot still need the eMMC for the U-Boot binary itself.
 
-## Key Design Decisions and Lessons
+**Why fitImage is loaded at 0x88300000.**
 
-**Why fw_payload embeds the DTB rather than relying on LoadFdt alone.**
-
-OpenSBI passes the DTB address to the kernel in register a1. When FW_FDT_PATH is specified at build time, OpenSBI embeds the DTB and guarantees the correct address is used. If only LoadFdt is used in Renode without the DTB embedded in fw_payload, OpenSBI reads address 0x0 looking for the device tree magic number, finds nothing, and the kernel panics early in boot.
-
-**Why hartid=1 is the boot hart.**
-
-The PolarFire SoC E51 core is hartid=0. The four U54 application cores are hartid=1 through hartid=4. Linux is designed to run on the U54 cores. By not instantiating hartid=0 in Renode and setting only cpu1's PC before starting, OpenSBI elects hartid=1 as the cold boot hart, which is the correct behavior for this platform.
-
-**Why cpu@2 through cpu@4 are disabled in the DTB.**
-
-With a single running hart in Renode, Linux SMP initialization hangs indefinitely if those CPUs are marked as available (status = "okay") in the DTB. The kernel issues SBI HSM (Hart State Management) calls to start secondary CPUs, but the halted Renode cores never respond. Marking cpu@2 through cpu@4 as disabled tells the kernel they do not exist, allowing single-CPU boot to complete without hanging.
-
-**Why keep_bootcon is required in the bootargs.**
-
-The Linux 8250/16550 driver probes successfully and registers ttyS1, but interactive use requires interrupt-driven I/O which does not work in this Renode configuration. Without keep_bootcon, the kernel disables the earlycon bootconsole when it switches to ttyS1, eliminating all visible output. With keep_bootcon, the earlycon remains active in parallel, preserving the kernel boot log in the uart1 window.
-
-**Why interactive shell input and output do not work.**
-
-The 8250/16550 kernel driver uses interrupts for both transmit and receive. For transmit, the driver waits for the Transmit Holding Register Empty (THRE) interrupt before writing the next character. For receive, characters are delivered via the Received Data Available interrupt. Both require the PLIC to correctly deliver interrupt source 91 (UART1) to the running hart. While the PLIC is wired in the platform description, Renode's NS16550 model does not generate these interrupts in a way that the 8250 driver can consume for terminal I/O. This is a limitation of the emulation, not of the Linux image itself.
+U-Boot is configured to search for the FIT image at this address. After HSS releases the U54 cores and U-Boot starts, it reads from 0x88300000, parses the FIT image header, and loads the kernel, initramfs, and DTB to their respective load addresses before booting the kernel.
 
 ---
 
 ## Tools Used
 
-- Buildroot: Meta-build system used to cross-compile the complete software stack from source, including the RISC-V toolchain, Linux kernel, OpenSBI, U-Boot, BusyBox, and userspace libraries.
-- OpenSBI (open source): RISC-V Supervisor Binary Interface reference firmware. Provides M-mode runtime services to S-mode OS.
-- Linux kernel 5.15.68 (Microchip fork): The operating system kernel, configured for the PolarFire SoC.
-- BusyBox: Provides the init process, shell, and core userspace utilities within the initramfs.
-- dtc (Device Tree Compiler): Used to decompile the Buildroot-generated DTB into editable DTS source and recompile it after modifications.
-- cpio and gzip: Used to extract and repack the BusyBox initramfs archive.
-- Python 3: Used for reliable multi-line and regex-based DTS text manipulation.
-- Renode (Antmicro): Open source hardware emulator. Provides RISC-V CPU cores, CLINT, PLIC, NS16550 UART, and memory peripheral models.
-- SoftConsole (Microchip): IDE for PolarFire SoC development, bundled with Renode.
-- GCC RISC-V cross-toolchain (riscv64-unknown-linux-gnu): Built by Buildroot, used by OpenSBI Makefile for compilation.
-- VMware Workstation: Virtualization platform running the Ubuntu 22.04 build environment on Windows 11.
+- Renode 1.13.1 (Antmicro, bundled with SoftConsole): Hardware emulator providing the PolarFire SoC platform model including all 5 RISC-V cores, CLINT, PLIC, NS16550 UARTs, eMMC/SDHC controller, PCIe, Ethernet, and DDR.
+- SoftConsole (Microchip): IDE providing the bundled Renode installation and platform scripts.
+- Antmicro pre-built binaries: HSS, U-Boot, Linux kernel, initramfs, and FIT image pre-adapted for the Renode PolarFire SoC platform.
+- HSS (Hart Software Services, Microchip open source): M-mode bootloader running on the E51 monitor core. Initializes DDR, configures PMP, and loads U-Boot to DDR from eMMC.
+- U-Boot 2020.01 (Microchip fork): S-mode bootloader. Reads FIT image, verifies hashes, loads kernel and initramfs to DDR, passes DTB address to kernel.
+- Linux kernel (Antmicro build, Buildroot-based): Full Linux kernel with BusyBox userspace and Buildroot rootfs in initramfs.
